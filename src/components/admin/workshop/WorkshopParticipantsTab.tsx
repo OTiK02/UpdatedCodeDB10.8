@@ -104,68 +104,105 @@ const WorkshopParticipantsTab = ({ workshopId }: { workshopId: string }) => {
   }, [filteredParticipants]);
 
   const fetchParticipants = async () => {
-    // Fetch participants with group info
-    const { data: participantsData, error } = await supabase
-      .from('user_workshops')
-      .select(`
-        id,
-        user_id,
-        status,
-        created_at,
-        profiles:user_id (
-          full_name,
-          email,
-          mobile_number
-        )
-      `)
-      .eq('workshop_id', workshopId)
-      .order('created_at', { ascending: false });
+    try {
+      // Fetch participants with group info
+      const { data: participantsData, error } = await supabase
+        .from('user_workshops')
+        .select(`
+          id,
+          user_id,
+          status,
+          created_at,
+          profiles:user_id (
+            full_name,
+            email,
+            mobile_number
+          )
+        `)
+        .eq('workshop_id', workshopId)
+        .order('created_at', { ascending: false });
 
-    if (error || !participantsData) return;
+      if (error) {
+        console.error('Error fetching participants:', error);
+        toast({ 
+          title: "Error loading participants", 
+          description: error.message,
+          variant: "destructive" 
+        });
+        return;
+      }
 
-    // Fetch group memberships and task counts
-    const participantsWithGroups = await Promise.all(
-      participantsData.map(async (participant) => {
-        // Get group info
-        const { data: groupData } = await supabase
-          .from('group_members')
-          .select(`
-            workshop_groups:group_id (
-              group_name,
-              group_code
-            )
-          `)
-          .eq('user_id', participant.user_id)
-          .maybeSingle();
+      if (!participantsData || participantsData.length === 0) {
+        setParticipants([]);
+        return;
+      }
 
-        // Get user's group IDs
-        const { data: userGroups } = await supabase
-          .from('group_members')
-          .select('group_id')
-          .eq('user_id', participant.user_id);
+      // Fetch group memberships and task counts
+      const participantsWithGroups = await Promise.all(
+        participantsData.map(async (participant) => {
+          try {
+            // Get group info for this workshop
+            const { data: groupData } = await supabase
+              .from('group_members')
+              .select(`
+                workshop_groups:group_id (
+                  group_name,
+                  group_code,
+                  workshop_id
+                )
+              `)
+              .eq('user_id', participant.user_id)
+              .maybeSingle();
 
-        const groupIds = userGroups?.map(g => g.group_id) || [];
+            // Filter to only get group for THIS workshop
+            const workshopGroup = groupData?.workshop_groups?.workshop_id === workshopId 
+              ? groupData.workshop_groups 
+              : null;
 
-        // Count completed tasks for user's groups
-        let taskCount = 0;
-        if (groupIds.length > 0) {
-          const { count } = await supabase
-            .from('team_task_submissions')
-            .select('id', { count: 'exact', head: true })
-            .eq('status', 'completed')
-            .in('group_id', groupIds);
-          taskCount = count || 0;
-        }
+            // Get user's group IDs for this workshop
+            const { data: userGroups } = await supabase
+              .from('group_members')
+              .select('group_id, workshop_groups!inner(workshop_id)')
+              .eq('user_id', participant.user_id)
+              .eq('workshop_groups.workshop_id', workshopId);
 
-        return {
-          ...participant,
-          group_info: groupData?.workshop_groups || null,
-          tasks_completed: taskCount,
-        };
-      })
-    );
+            const groupIds = userGroups?.map(g => g.group_id) || [];
 
-    setParticipants(participantsWithGroups as any);
+            // Count completed tasks for user's groups
+            let taskCount = 0;
+            if (groupIds.length > 0) {
+              const { count } = await supabase
+                .from('team_task_submissions')
+                .select('id', { count: 'exact', head: true })
+                .eq('status', 'completed')
+                .in('group_id', groupIds);
+              taskCount = count || 0;
+            }
+
+            return {
+              ...participant,
+              group_info: workshopGroup,
+              tasks_completed: taskCount,
+            };
+          } catch (err) {
+            console.error('Error processing participant:', err);
+            return {
+              ...participant,
+              group_info: null,
+              tasks_completed: 0,
+            };
+          }
+        })
+      );
+
+      setParticipants(participantsWithGroups as any);
+    } catch (error) {
+      console.error('Error in fetchParticipants:', error);
+      toast({ 
+        title: "Failed to load participants", 
+        variant: "destructive" 
+      });
+    }
   };
 
   const exportParticipants = () => {
